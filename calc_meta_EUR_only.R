@@ -1,13 +1,42 @@
+#!/usr/bin/env Rscript
+
+# Get command line arguments
+args <- commandArgs(trailingOnly = TRUE)
+if (length(args) < 1) {
+  stop("Usage: Rscript run_meta_analysis.R <input_file.tsv.gz>")
+}
+
+input_file <- args[1]
+
+# Extract basename for output file naming
+library(tools)
+base_name <- file_path_sans_ext(file_path_sans_ext(basename(input_file))) # Remove .tsv.gz
+output_file <- paste0(base_name, "_EUR.tsv")
+
+cat("Processing", input_file, "-> Output:", output_file, "\n")
+
 # Load necessary packages
 library(data.table)
 
 # Start timing
 start_time <- Sys.time()
 
-# Read the data
-gwas_data <- fread("/mnt/project/publically_available_summary_statistics/meta/G6_MS_meta_out.tsv.gz", header = TRUE)
+# Read the data efficiently
+cat("Reading data file...\n")
+gwas_data <- fread(input_file, header = TRUE)
+
+# Check if required columns exist
+required_cols <- c("fg_beta", "fg_sebeta", "MVP_EUR_beta", "MVP_EUR_sebeta", 
+                  "ukbb_beta", "ukbb_sebeta")
+                  
+missing_cols <- required_cols[!required_cols %in% names(gwas_data)]
+if (length(missing_cols) > 0) {
+  stop("Missing required columns in input file: ", paste(missing_cols, collapse=", "))
+}
 
 # Perform meta-analysis using vectorized operations
+cat("Performing meta-analysis...\n")
+
 # Create columns to track non-missing values
 gwas_data[, `:=`(
   fg_valid = !is.na(fg_beta) & !is.na(fg_sebeta),
@@ -67,16 +96,33 @@ gwas_data[meta_EUR_N < 2, `:=`(
   Q_pval = NA_real_
 )]
 
+# Filter rows with meta_EUR_N > 2 and non-missing meta_beta and meta_se
+cat("Filtering results...\n")
+filtered_gwas_data <- gwas_data[meta_EUR_N > 2 & !is.na(meta_beta) & !is.na(meta_se)]
+
 # Select only the requested columns for the final output
-# Assuming the first column is named "#CHR" with the hash symbol
+# Check if these columns exist in the data
 final_columns <- c("#CHR", "POS", "REF", "ALT", "SNP", "rsid", 
                    "meta_EUR_N", "meta_beta", "meta_se", "meta_p", "Q", "Q_pval")
+                   
+present_columns <- final_columns[final_columns %in% names(filtered_gwas_data)]
+missing_cols <- final_columns[!final_columns %in% names(filtered_gwas_data)]
+
+if (length(missing_cols) > 0) {
+  cat("Warning: Some requested columns are missing:", paste(missing_cols, collapse=", "), "\n")
+  cat("Using available columns:", paste(present_columns, collapse=", "), "\n")
+}
 
 # Create final results table with only selected columns
-final_results <- filtered_gwas_data[, ..final_columns]
+final_results <- filtered_gwas_data[, ..present_columns]
+
+# Remove intermediate calculation columns
+gwas_data[, c("fg_valid", "MVP_EUR_valid", "ukbb_valid", "fg_weight", 
+              "MVP_EUR_weight", "ukbb_weight", "total_weight") := NULL]
 
 # Save final results to a new file
-fwrite(final_results, "gwas_meta_analysis_final_results.tsv", sep = "\t")
+cat("Writing results to", output_file, "\n")
+fwrite(final_results, output_file, sep = "\t")
 
 # Report timing and statistics
 end_time <- Sys.time()
